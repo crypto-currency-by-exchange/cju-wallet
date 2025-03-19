@@ -4,6 +4,8 @@ import base58
 
 from ecdsa import NIST256p, SigningKey
 
+from Crypto.Hash import RIPEMD160
+
 from src.utils import dict_utils
 
 
@@ -30,7 +32,7 @@ class Wallet:
         sha256_bpk = hashlib.sha256(public_key_bytes)
         sha256_bpk_digest = sha256_bpk.digest()
 
-        ripemd160_bpk = hashlib.new("ripemd160")
+        ripemd160_bpk = RIPEMD160.new()
         ripemd160_bpk.update(sha256_bpk_digest)
         ripemd160_bpk_digest = ripemd160_bpk.digest()
         ripemd160_bpk_digest_hex = codecs.encode(ripemd160_bpk_digest, "hex")
