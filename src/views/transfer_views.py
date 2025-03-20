@@ -1,3 +1,4 @@
+import time
 import requests
 
 from flask import (
@@ -7,9 +8,11 @@ from flask import (
     jsonify,
 )
 from flask_wtf.csrf import generate_csrf
+from src import db
 from src.forms import TransferForm
+from src.utils import p2p_utils
 from src.wallet import Wallet
-from src.config import SEED_NODE_IP, PORT_MINING
+from src.config import PORT_P2P, SEED_NODE_IP, PORT_MINING
 
 bp = Blueprint("transfer", __name__, url_prefix="/")
 
@@ -82,25 +85,48 @@ def transfer():
         }
         headers = {"X-CSRFToken": generate_csrf()}
 
-        seed_node_url = f"http://{SEED_NODE_IP}:{PORT_MINING}/transactions"
+        blockchain_seed_node = f"http://{SEED_NODE_IP}:{PORT_P2P}/neighbors"
 
-        response = requests.post(
-            url=seed_node_url,
-            json=json_data,
-            timeout=3,
-            headers=headers,
-        )
+        resp = requests.get(blockchain_seed_node)
 
-        if response.status_code == 201:
-            return jsonify(
-                {
-                    "status": "success",
-                    "amount": amount,
-                }
-            )
+        neighbors_dic = resp.json()
 
-        return jsonify(
-            {"status": "fail", "reason": "블록체인 서버 연결에 실패했습니다."}
+        for neighbor in neighbors_dic.values():
+            ip, port = neighbor["ip"], neighbor["port"]
+
+            node = p2p_utils.check_node_exist(ip, port)
+
+            if not node:
+                p2p_utils.add_new_node(ip, port)
+
+            else:
+                node.timestamp = time.time()
+
+        neighbor_in_db = p2p_utils.get_all_nodes()
+
+        for neighbor in neighbor_in_db:
+            resp = requests.get(f"http://{neighbor.ip}:{PORT_MINING}/is_mining_active")
+
+            resp_dic = resp.json()
+
+            if resp_dic["status"] == "mining_active":
+                neighbor_url = f"http://{neighbor.ip}:{PORT_MINING}/transactions"
+
+                response = requests.post(
+                    neighbor_url,
+                    json=json_data,
+                    headers=headers,
+                )
+                if response.status_code == 201:
+                    neighbor.timestamp = time.time()
+
+                    db.session.commit()
+
+                    return jsonify({"status": "success", "amount": amount}), 201
+
+        return (
+            jsonify({"status": "fail", "reason": "블록체인 서버 연결에 실패했습니다."}),
+            400,
         )
 
     return render_template(
@@ -127,9 +153,40 @@ def get_coin_amount():
         json=json_data,
     )
     data = response.json()
+
     if response.status_code == 201:
         return jsonify({"status": "success", "amount": data["content"]}), 200
+
     else:
+        neighbors_in_db = p2p_utils.get_all_nodes()
+
+        for neighbor in neighbors_in_db:
+            if neighbor.id == SEED_NODE_IP:
+                continue
+
+            resp = requests.get(f"http://{neighbor.ip}:{PORT_MINING}/is_mining_active")
+
+            resp_dic = resp.json()
+
+            if resp_dic["status"] == "mining_active":
+                neighbor_url = f"http://{neighbor.ip}:{PORT_MINING}/coin_amount"
+
+                json_data = {
+                    "blockchain_addr": blockchain_addr,
+                }
+                resp_coin_amount = requests.post(neighbor_url, json=json_data)
+
+                if resp_coin_amount.status_code == 201:
+                    data = resp_coin_amount.json()
+
+                    neighbor.timestamp = time.time()
+
+                    db.session.commit()
+                    return (
+                        jsonify({"status": "success", "amount": data["content"]}),
+                        201,
+                    )
+
         return (
             jsonify(
                 {"status": "fail", "content": "블록체인 노드와 연결에 실패했습니다."}
